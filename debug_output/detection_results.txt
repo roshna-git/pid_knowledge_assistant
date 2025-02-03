@@ -1,0 +1,8 @@
+Detected Equipment:
+- tank: T-101
+- pump: P-101
+- valve: V-101
+
+Detected Connections:
+- T-101 -> P-101
+- P-101 -> V-101
