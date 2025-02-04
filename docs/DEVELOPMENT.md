@@ -1,17 +1,5 @@
 # Development Guide
 
-## Setup Development Environment
-
-1. Install development dependencies:
-```bash
-pip install -r requirements-dev.txt
-```
-
-2. Set up pre-commit hooks:
-```bash
-pre-commit install
-```
-
 ## Code Structure
 
 ### Components

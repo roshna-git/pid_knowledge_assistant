@@ -25,6 +25,8 @@ class PIDAssistant:
         self.vs = VectorStore()
         self.nlp = NLPProcessor(knowledge_graph=self.kg, vector_store=self.vs)
         self.pid_processor = PIDProcessor(knowledge_graph=self.kg)
+        # Initialize empty chat history
+        self.chat_history = []
         logger.info("PIDAssistant initialized with all components")
 
     def upload_pid(self, file_obj) -> str:
@@ -79,9 +81,9 @@ class PIDAssistant:
         try:
             logger.info(f"Processing message: {message}")
             
-            # Process the query using NLP processor
+            # Basic call without history for now
             response = self.nlp.process_query(message)
-            logger.info(f"Processed query: {response}")
+            logger.info(f"Processed query response: {response}")
             
             # Update history and clear input
             history.append((message, response))
@@ -89,8 +91,22 @@ class PIDAssistant:
             
         except Exception as e:
             logger.error(f"Error in user_message: {e}", exc_info=True)
-            history.append((message, f"Error processing query: {str(e)}"))
+            error_message = f"Error processing query: {str(e)}"
+            history.append((message, error_message))
             return "", history
+
+    def clear_chat(self):
+        """Clear chat history and reset memory"""
+        try:
+            # Clear Gradio chat history
+            self.chat_history = []
+            # Reset LangChain conversation memory
+            self.nlp.memory.clear()
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error clearing chat: {e}")
+            return None
 
 def build_interface():
     """Create the Gradio interface"""
@@ -144,7 +160,7 @@ def build_interface():
         )
         
         clear.click(
-            fn=lambda: None,
+            fn=assistant.clear_chat,
             inputs=None,
             outputs=chatbot
         )

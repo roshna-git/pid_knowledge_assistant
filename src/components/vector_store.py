@@ -1,42 +1,44 @@
 """
-Vector Store Component using ChromaDB for equipment similarity search
+Vector Store Component using LangChain and ChromaDB for equipment similarity search
 """
 
 import os
 import logging
 from typing import Dict, List, Optional
 from pathlib import Path
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.schema import Document
 
 class VectorStore:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
         try:
-            # Create persistent ChromaDB client
+            # Create persistent directory for ChromaDB
             db_path = Path("chroma_db")
             db_path.mkdir(exist_ok=True)
             
-            self.client = chromadb.PersistentClient(
-                path=str(db_path),
-                settings=Settings(
-                    anonymized_telemetry=False
-                )
+            # Initialize LangChain embeddings
+            self.embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                openai_api_key=os.getenv('OPENAI_API_KEY')
             )
             
-            # Initialize OpenAI embeddings
-            self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
-                api_key=os.getenv('OPENAI_API_KEY'),
-                model_name="text-embedding-3-small"
+            # Initialize text splitter for document chunking
+            self.text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                separators=["\n\n", "\n", ". ", ", ", " ", ""]
             )
             
-            # Create or get collection with embeddings
-            self.collection = self.client.get_or_create_collection(
-                name="pid_equipment",
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+            # Create or get Chroma collection using LangChain
+            self.vectorstore = Chroma(
+                persist_directory=str(db_path),
+                embedding_function=self.embeddings,
+                collection_name="pid_equipment"
             )
             
             self.logger.info("Vector store initialized successfully")
@@ -68,30 +70,31 @@ class VectorStore:
         return "\n".join(doc_parts)
 
     def add_equipment(self, equipment_list: List[Dict]) -> None:
-        """Add equipment to vector store with enhanced embeddings."""
+        """Add equipment to vector store with LangChain documents."""
         try:
             documents = []
-            ids = []
-            metadatas = []
             
             for equipment in equipment_list:
                 # Create rich text representation
                 doc_text = self._create_document_text(equipment)
                 
-                # Store document and metadata
-                documents.append(doc_text)
-                ids.append(equipment['id'])
-                metadatas.append({
-                    'type': equipment['type'],
-                    'id': equipment['id']
-                })
+                # Create LangChain document
+                doc = Document(
+                    page_content=doc_text,
+                    metadata={
+                        'id': equipment['id'],
+                        'type': equipment['type'],
+                        'name': equipment.get('name', ''),
+                        'description': equipment.get('description', '')
+                    }
+                )
+                documents.append(doc)
             
-            # Add to collection
-            self.collection.add(
-                documents=documents,
-                ids=ids,
-                metadatas=metadatas
-            )
+            # Split documents into chunks if needed
+            chunked_docs = self.text_splitter.split_documents(documents)
+            
+            # Add to vector store
+            self.vectorstore.add_documents(documents=chunked_docs)
             
             self.logger.info(f"Added {len(equipment_list)} equipment to vector store")
             
@@ -101,30 +104,29 @@ class VectorStore:
 
     def query_similar(self, query: str, n_results: int = 5, 
                      filter_criteria: Optional[Dict] = None) -> List[Dict]:
-        """Query for similar equipment using vector similarity."""
+        """Query for similar equipment using LangChain retriever."""
         try:
-            # Create query with optional filters
-            query_params = {
-                "query_texts": [query],
-                "n_results": n_results
-            }
-            
+            # Prepare search filters
+            search_kwargs = {"k": n_results}
             if filter_criteria:
-                query_params["where"] = filter_criteria
+                search_kwargs["filter"] = filter_criteria
             
-            # Execute query
-            results = self.collection.query(**query_params)
+            # Get relevant documents
+            docs = self.vectorstore.similarity_search(
+                query,
+                **search_kwargs
+            )
             
             # Format results
             similar_equipment = []
-            if results['ids']:
-                for idx, eq_id in enumerate(results['ids'][0]):
-                    similar_equipment.append({
-                        'id': eq_id,
-                        'metadata': results['metadatas'][0][idx],
-                        'content': results['documents'][0][idx],
-                        'similarity': float(results['distances'][0][idx]) if 'distances' in results else None
-                    })
+            for doc in docs:
+                similar_equipment.append({
+                    'id': doc.metadata.get('id', ''),
+                    'type': doc.metadata.get('type', ''),
+                    'name': doc.metadata.get('name', ''),
+                    'description': doc.metadata.get('description', ''),
+                    'content': doc.page_content
+                })
             
             return similar_equipment
             
@@ -133,70 +135,55 @@ class VectorStore:
             raise
 
     def hybrid_search(self, query: str, equipment_type: Optional[str] = None) -> List[Dict]:
-        """Perform hybrid search using both vector similarity and metadata filtering."""
+        """Perform hybrid search using LangChain retriever."""
         try:
             filter_criteria = {"type": equipment_type} if equipment_type else None
-            
-            # Get vector similarity results
-            vector_results = self.query_similar(
+            return self.query_similar(
                 query=query,
                 n_results=10,
                 filter_criteria=filter_criteria
             )
             
-            return vector_results
-            
         except Exception as e:
             self.logger.error(f"Error in hybrid search: {str(e)}")
-            raise
-
-    def update_equipment(self, equipment_id: str, new_data: Dict) -> None:
-        """Update equipment in vector store."""
-        try:
-            # Create new document text
-            doc_text = self._create_document_text(new_data)
-            
-            # Update in collection
-            self.collection.update(
-                ids=[equipment_id],
-                documents=[doc_text],
-                metadatas=[{
-                    'type': new_data['type'],
-                    'id': new_data['id']
-                }]
-            )
-            
-            self.logger.info(f"Updated equipment {equipment_id} in vector store")
-            
-        except Exception as e:
-            self.logger.error(f"Error updating equipment: {str(e)}")
-            raise
-
-    def delete_equipment(self, equipment_id: str) -> None:
-        """Delete equipment from vector store."""
-        try:
-            self.collection.delete(ids=[equipment_id])
-            self.logger.info(f"Deleted equipment {equipment_id} from vector store")
-            
-        except Exception as e:
-            self.logger.error(f"Error deleting equipment: {str(e)}")
             raise
 
     def get_similar_equipment(self, equipment_id: str, n_results: int = 5) -> List[Dict]:
         """Find equipment similar to a specific equipment ID."""
         try:
-            # Get equipment document
-            result = self.collection.get(ids=[equipment_id])
+            # Search for equipment by ID
+            docs = self.vectorstore.similarity_search(
+                f"Equipment ID: {equipment_id}",
+                k=1
+            )
             
-            if not result['documents']:
+            if not docs:
                 return []
             
-            # Use document as query
-            return self.query_similar(
-                query=result['documents'][0],
-                n_results=n_results + 1  # Add 1 to account for self-match
-            )[1:]  # Remove self-match from results
+            # Use document content to find similar equipment
+            similar_docs = self.vectorstore.similarity_search(
+                docs[0].page_content,
+                k=n_results + 1  # Add 1 to account for self-match
+            )
+            
+            # Format and filter results
+            similar_equipment = []
+            for doc in similar_docs:
+                if doc.metadata.get('id') != equipment_id:  # Exclude self-match
+                    similar_equipment.append({
+                        'id': doc.metadata.get('id', ''),
+                        'type': doc.metadata.get('type', ''),
+                        'content': doc.page_content
+                    })
+            
+            return similar_equipment[:n_results]
             
         except Exception as e:
             self.logger.error(f"Error finding similar equipment: {str(e)}")
             raise
+
+    def as_retriever(self, search_kwargs: Optional[Dict] = None):
+        """Get LangChain retriever interface."""
+        return self.vectorstore.as_retriever(
+            search_kwargs=search_kwargs if search_kwargs else {"k": 5}
+        )
