@@ -6,3 +6,8 @@ __pycache__/
 .idea/
 *.log
 src/tests/
+.gradio
+.pytest_cache
+chroma_db
+data
+
