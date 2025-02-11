@@ -10,6 +10,8 @@ from components.knowledge_graph import KnowledgeGraph
 from components.vector_store import VectorStore
 from components.pid_processor import PIDProcessor
 from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict
+from fastapi import FastAPI
 
 # Load environment variables
 load_dotenv()
@@ -29,51 +31,31 @@ class PIDAssistant:
         self.chat_history = []
         logger.info("PIDAssistant initialized with all components")
 
-    def upload_pid(self, file_obj) -> str:
-        """Process uploaded P&ID file and store in both knowledge graph and vector store"""
+    def upload_pid(self, file_obj, use_gemini: bool = False) -> str:
+        """Process uploaded P&ID file with optional Gemini model selection"""
         try:
             if file_obj is None:
                 return "Please select a file to upload."
                 
-            # Handle file object from Gradio
-            if hasattr(file_obj, 'name'):
-                file_path = file_obj.name
-            else:
+            file_path = file_obj.name if hasattr(file_obj, 'name') else None
+            if not file_path:
                 return "Invalid file object received"
 
-            file_ext = os.path.splitext(file_path)[1].lower()
-            logger.info(f"Processing file: {file_path}")
-            logger.info(f"File extension: {file_ext}")
+            # Process the file using PIDProcessor with model selection
+            results = self.pid_processor.process_file(file_path, use_gemini=use_gemini)
             
-            allowed_extensions = ['.pdf', '.png', '.jpg', '.jpeg']
-            if file_ext not in allowed_extensions:
-                return f"Invalid file type. Please upload one of these formats: {', '.join(allowed_extensions)}"
-
-            try:
-                # Process the file using PIDProcessor
-                results = self.pid_processor.process_file(file_path)
+            if results['status'] == 'success':
+                try:
+                    self.vs.add_equipment(results['equipment'])
+                    return f"Successfully processed with {'Gemini' if use_gemini else 'OpenAI'}.\nFound {len(results['equipment'])} equipment and {len(results['connections'])} connections."
+                except Exception as e:
+                    self.logger.error(f"Error adding to vector store: {e}")
+                    return f"Error storing results: {str(e)}"
+            else:
+                return f"Error processing file: {results.get('message', 'Unknown error')}"
                 
-                if results['status'] == 'success':
-                    # Store equipment in vector database
-                    try:
-                        logger.info("Adding equipment to vector store...")
-                        self.vs.add_equipment(results['equipment'])
-                        logger.info("Equipment added to vector store successfully")
-                    except Exception as e:
-                        logger.error(f"Error adding to vector store: {e}")
-                    
-                    return (f"Successfully processed {os.path.basename(file_path)}.\n"
-                           f"Found {len(results['equipment'])} equipment and "
-                           f"{len(results['connections'])} connections.")
-                else:
-                    return f"Error processing file: {results.get('message', 'Unknown error')}"
-                    
-            except Exception as e:
-                logger.error(f"Error in file processing: {e}", exc_info=True)
-                return f"Error processing file: {str(e)}"
-                    
         except Exception as e:
-            logger.error(f"Error in upload_pid: {e}", exc_info=True)
+            self.logger.error(f"Error in upload_pid: {e}", exc_info=True)
             return f"Error processing file: {str(e)}"
 
     def user_message(self, message: str, history: list) -> tuple:
@@ -108,6 +90,15 @@ class PIDAssistant:
             logger.error(f"Error clearing chat: {e}")
             return None
 
+# Create FastAPI app with Pydantic v2 config
+app = FastAPI()
+
+class ModelConfig(BaseModel):
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        from_attributes=True
+    )
+    
 def build_interface():
     """Create the Gradio interface"""
     assistant = PIDAssistant()
@@ -119,20 +110,27 @@ def build_interface():
                 gr.Markdown("## Upload P&ID")
                 file_input = gr.File(
                     label="Upload P&ID File",
-                    file_types=[".pdf", ".png", ".jpg", ".jpeg"]
+                    file_types=[".pdf", ".png", ".jpg", ".jpeg"],
+                    type="filepath"
+                )
+                model_selector = gr.Checkbox(
+                    label="Use Gemini Pro Vision (if not checked, will use OpenAI)",
+                    value=False,
+                    interactive=True
                 )
                 status_output = gr.Textbox(
                     label="Processing Status",
                     interactive=False
                 )
-                upload_button = gr.Button("Process P&ID")
+                upload_button = gr.Button("Process P&ID", variant="primary")
             
             # Right column - Chat Interface
             with gr.Column(scale=2):
                 gr.Markdown("## Query P&ID")
                 chatbot = gr.Chatbot(
                     label="Chat History",
-                    height=400
+                    height=400,
+                    show_label=True
                 )
                 with gr.Row():
                     msg_box = gr.Textbox(
@@ -146,23 +144,29 @@ def build_interface():
                     )
                     clear = gr.Button("Clear", scale=1)
         
-        # Event handlers
+        # Event handlers with concurrency limits
+        upload_button.click(
+            fn=assistant.upload_pid,
+            inputs=[file_input, model_selector],
+            outputs=status_output,
+            api_name="upload",
+            concurrency_limit=1
+        )
+        
         msg_box.submit(
             fn=assistant.user_message,
             inputs=[msg_box, chatbot],
-            outputs=[msg_box, chatbot]
-        )
-        
-        upload_button.click(
-            fn=assistant.upload_pid,
-            inputs=[file_input],
-            outputs=[status_output]
+            outputs=[msg_box, chatbot],
+            api_name="chat",
+            concurrency_limit=1
         )
         
         clear.click(
             fn=assistant.clear_chat,
             inputs=None,
-            outputs=chatbot
+            outputs=chatbot,
+            api_name="clear",
+            concurrency_limit=1
         )
     
     return interface
@@ -170,4 +174,12 @@ def build_interface():
 if __name__ == "__main__":
     logger.info("Starting P&ID Knowledge Graph Assistant")
     demo = build_interface()
-    demo.launch(debug=True)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=None,
+        debug=True,
+        show_error=True,
+        max_threads=4,
+        auth=None,
+        quiet=True
+    )

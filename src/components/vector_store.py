@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from pathlib import Path
 
 from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document

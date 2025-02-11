@@ -1,8 +1,28 @@
+Detection Time: 2025-02-11 17:37:54.781507
+
 Detected Equipment:
-- tank: T-101
-- pump: P-101
-- valve: V-101
+- tank: T-6203-01
+- pump: P-6203-01
+- pump: P-6203-02
+- valve: V-6203-01
+- valve: TPV-101
+- valve: TPV-102
+- valve: TPV-103
+- valve: TPV-104
+- valve: TPV-105
+- valve: TPV-106
+- valve: TPV-107
+- valve: TPV-108
 
 Detected Connections:
-- T-101 -> P-101
-- P-101 -> V-101
+- T-6203-01 -> P-6203-01
+- P-6203-01 -> P-6203-02
+- P-6203-02 -> V-6203-01
+- V-6203-01 -> TPV-101
+- TPV-101 -> TPV-102
+- TPV-102 -> TPV-103
+- TPV-103 -> TPV-104
+- TPV-104 -> TPV-105
+- TPV-105 -> TPV-106
+- TPV-106 -> TPV-107
+- TPV-107 -> TPV-108
